@@ -2,9 +2,10 @@
 import { ref, computed } from 'vue'
 import VideoPlayer from './components/VideoPlayer.vue'
 
-const host = ref('userid-123.red5.net')
-const streamName = ref('stream1')
-const nodeGroup = ref('Bas-123')
+const params = new URLSearchParams(window.location.search)
+const host = ref(params.get('host') ?? 'userid-123.red5.net')
+const streamName = ref(params.get('streamName') ?? 'stream1')
+const nodeGroup = ref(params.get('nodeGroup') ?? 'Bas-123')
 
 const subscribed = ref(false)
 const statusMessage = ref('Idle')
@@ -22,16 +23,15 @@ function toggleSubscription() {
   }
 }
 
-function handleStatus(msg: string) {
+function handleStatus({ msg, retry }: { msg: string; retry: boolean }) {
   statusMessage.value = msg
-  if (msg === 'Stopped' || msg === 'Disconnected') {
+  if (!retry) {
     subscribed.value = false
   }
 }
 
-function handleError(msg: string) {
-  errorMessage.value = msg
-  subscribed.value = false
+function handleError(message: string) {
+  errorMessage.value = message
 }
 
 const statusClass = computed(() => ({
@@ -125,6 +125,7 @@ const statusClass = computed(() => ({
           :stream-name="streamName"
           :node-group="nodeGroup"
           :subscribed="subscribed"
+          :retry-enabled="true"
           @status="handleStatus"
           @error="handleError"
         />

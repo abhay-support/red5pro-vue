@@ -3,26 +3,29 @@ import { ref, watch, onUnmounted } from 'vue'
 import { WHEPClient, setLogLevel } from 'red5pro-webrtc-sdk'
 import type { RTCWhepSubscriberConfigType } from 'red5pro-webrtc-sdk'
 
-setLogLevel('debug')
+setLogLevel('warn')
 
 interface Props {
   host: string
   streamName: string
   nodeGroup: string
   subscribed: boolean
+  retryEnabled?: boolean
+  retryDelay?: number
 }
 
 const props = defineProps<Props>()
 const emit = defineEmits<{
   (e: 'error', message: string): void
-  (e: 'status', message: string): void
+  (e: 'status', payload: { msg: string; retry: boolean }): void
 }>()
 
-const RETRY_DELAY_MS = 1000
+const RETRY_DELAY_MS = 2000
 
 const VIDEO_ELEMENT_ID = 'red5pro-subscriber'
 const client = ref<WHEPClient | null>(null)
 const retryTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const isStarting = ref(false)
 
 function clearRetryTimer() {
   if (retryTimer.value !== null) {
@@ -42,11 +45,26 @@ async function clearClient() {
   }
 }
 
+async function scheduleRetry() {
+  clearRetryTimer()
+  await clearClient()
+  emit('status', { msg: 'Retrying...', retry: true })
+  if (props.subscribed) {
+    retryTimer.value = setTimeout(() => {
+      retryTimer.value = null
+      if (props.subscribed) startSubscription()
+    }, props.retryDelay || RETRY_DELAY_MS)
+  }
+}
+
 async function startSubscription() {
+  if (isStarting.value) return
+  isStarting.value = true
+  clearRetryTimer()
   await clearClient()
 
   try {
-    emit('status', 'Connecting...')
+    emit('status', { msg: 'Connecting...', retry: true })
 
     const endpoint = `https://${props.host}/as/v1/proxy/whep/live/${props.streamName}`
     const config: RTCWhepSubscriberConfigType = {
@@ -63,24 +81,18 @@ async function startSubscription() {
     subscriber.on('*', (event: { type: string }) => {
       const { type } = event
       if (type === 'Subscribe.Start') {
-        emit('status', 'Live')
-      } else if (type === 'Subscribe.Stop') {
-        emit('status', 'Stopped')
+        emit('status', { msg: 'Live', retry: true })
+        emit('error', '')
       } else if (
-        type === 'Subscribe.Connection.Closed' || 
-        type === 'Connect.Failure' || 
-        type === 'Subscribe.Play.Unpublish') {
-        emit('status', 'Retrying...')
-        clearClient().then(() => {
-          if (props.subscribed) {
-            retryTimer.value = setTimeout(() => {
-              retryTimer.value = null
-              if (props.subscribed) {
-                startSubscription()
-              }
-            }, RETRY_DELAY_MS)
-          }
-        })
+        type === 'Subscribe.Connection.Closed' ||
+        type === 'Connect.Failure' ||
+        type === 'Subscribe.Play.Unpublish'
+      ) {
+        if (props.retryEnabled) {
+          scheduleRetry()
+        } else {
+          emit('status', { msg: 'Stopped', retry: false })
+        }
       }
     })
 
@@ -91,24 +103,21 @@ async function startSubscription() {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     emit('error', message)
-    emit('status', 'Retrying...')
-    await clearClient()
-
-    if (props.subscribed) {
-      retryTimer.value = setTimeout(() => {
-        retryTimer.value = null
-        if (props.subscribed) {
-          startSubscription()
-        }
-      }, RETRY_DELAY_MS)
+    if (props.retryEnabled) {
+      scheduleRetry()
+    } else {
+      emit('status', { msg: message, retry: false })
     }
+  } finally {
+    isStarting.value = false
   }
 }
 
 async function stopSubscription() {
   clearRetryTimer()
+  isStarting.value = false
   await clearClient()
-  emit('status', 'Idle')
+  emit('status', { msg: 'Idle', retry: false })
 }
 
 watch(
